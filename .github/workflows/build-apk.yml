@@ -1,0 +1,77 @@
+name: Build Android APK and publish downloads
+
+# Put this file in your repository at:  .github/workflows/build-apk.yml
+# Also upload ya-hakeem-github-repo.zip (as it is, no unzipping) to the repository root.
+# The workflow unpacks the zip itself, builds the Android APK and publishes the APK and PDFs.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "README.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # becomes "true" if you add the optional signing secrets (KEYSTORE_BASE64 etc.)
+      HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Unpack the project zip
+        run: |
+          ZIP=$(ls ./*.zip 2>/dev/null | head -n 1)
+          if [ -z "$ZIP" ]; then echo "No .zip file found in the repository root"; exit 1; fi
+          echo "Unpacking $ZIP"
+          mkdir -p build
+          unzip -q -o "$ZIP" -d build
+          ls -la build build/pdf
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Prepare web assets (fills in this repository's download links)
+        working-directory: build
+        run: |
+          mkdir -p www
+          sed -e "s|__GH_OWNER__|${GITHUB_REPOSITORY_OWNER}|g" \
+              -e "s|__GH_REPO__|${GITHUB_REPOSITORY#*/}|g" \
+              index.html > www/index.html
+
+      - name: Install dependencies
+        working-directory: build
+        run: npm install --no-audit --no-fund
+
+      - name: Generate the Android project
+        working-directory: build
+        run: npx cap add android
+
+      - name: Generate launcher icons
+        working-directory: build
+        continue-on-error: true
+        run: npx capacitor-assets generate --android --iconBackgroundColor '#0B1F3A'
+
+      - name: Set version from run number
+        working-directory: build
+        run: |
+          sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/; s/versionName \"1.0\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
+
+      - name: Sync web assets into the Androi
