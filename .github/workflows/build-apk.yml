@@ -48,9 +48,6 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Prepare web assets (fills in this repository's download links)
         working-directory: build
         run: |
