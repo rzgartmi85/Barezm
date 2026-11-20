@@ -6,7 +6,6 @@ name: Build Android APK and publish downloads
 
 on:
   push:
-    branches: [main]
     paths-ignore:
       - "README.md"
   workflow_dispatch:
@@ -21,6 +20,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       # becomes "true" if you add the optional signing secrets (KEYSTORE_BASE64 etc.)
       HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
@@ -48,6 +48,9 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
       - name: Prepare web assets (fills in this repository's download links)
         working-directory: build
         run: |
@@ -74,4 +77,56 @@ jobs:
         run: |
           sed -i "s/versionCode 1/versionCode ${{ github.run_number }}/; s/versionName \"1.0\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
 
-      - name: Sync web assets into the Androi
+      - name: Sync web assets into the Android project
+        working-directory: build
+        run: npx cap sync android
+
+      - name: Build signed release APK
+        if: env.HAS_KEYSTORE == 'true'
+        working-directory: build/android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -f -p 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+          "$BT/apksigner" sign \
+            --ks "$RUNNER_TEMP/release.keystore" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out ../YaHakeem.apk aligned.apk
+          rm -f "$RUNNER_TEMP/release.keystore"
+
+      - name: Build debug APK (no keystore found)
+        if: env.HAS_KEYSTORE != 'true'
+        working-directory: build/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../YaHakeem.apk
+
+      - name: Keep a copy as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YaHakeem-apk
+          path: build/YaHakeem.apk
+          if-no-files-found: error
+
+      - name: Publish APK and PDFs to the "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Ya Hakeem - latest downloads
+          make_latest: true
+          body: |
+            Latest Android app and question bank PDFs.
+            Install the APK on an Android phone (allow installs from your browser when asked).
+          files: |
+            build/YaHakeem.apk
+            build/pdf/*.pdf
